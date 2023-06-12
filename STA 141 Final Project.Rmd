@@ -1,0 +1,494 @@
+---
+title: "Exploring Neurons Activity in the Mouse Brain"
+author: "Xin Huang (919238882)"
+date: "2023-06-12"
+output:
+  html_document:
+    df_print: paged
+    number_sections: yes
+    toc: true
+    toc_float: true
+  pdf_document: default
+  word_document: default
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H')
+library(htmlwidgets)
+```
+
+```{r, echo=FALSE, warning=FALSE, results='hide',include = FALSE, message=FALSE}
+library(tidyverse)
+library(data.table)
+library(dplyr)
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('~/Downloads/UC Davis/Year 2/Quarter 3/STA 141A/sessions/session',i,'.rds',sep=''))
+}
+
+test=list()
+for(i in 1:2){
+  test[[i]]=readRDS(paste('~/Downloads/UC Davis/Year 2/Quarter 3/STA 141A/test/test',i,'.rds',sep=''))
+}
+```
+
+# Abstract
+This study investigates the relationship between neural activity and behavioral responses to different feedback types. The process of developing the predictive model involves three key steps: exploratory data analysis, data integration, and model prediction. Analysis of data from multiple sessions reveals that neurons tend to exhibit slightly higher spike counts in response to feedback 1 compared to feedback -1. Clustering analysis identifies distinct groups of neurons with similar response patterns for each feedback type. Variations in success rates across sessions and mice indicate differences in task performance capabilities. Combining trial data shows no significant difference in spike counts between feedback types. A prediction model achieves accuracies of 66% and 80% for two test sessions. These findings enhance our understanding of the neural mechanisms underlying behavioral responses to feedback types.
+
+# Introduction
+Neurons are the work units of the nervous system and play a crucial role in processing and transmitting information throughout the body. This report focuses on studying the neuron activity within the mice. We analyze different feedback types that mice received in response to their actions. This analysis allows us to investigate how the brain reacts to positive and negative feedback types, how it influences decision-making, and how neural activity changes across feedback types.
+
+Feedback plays a significant role in learning and decision-making processes. Analyzing different feedback types allows us to investigate how the brain responds to positive or negative outcomes, how it adapts behavior based on feedback, and how neural activity influences learning and decision-making. This knowledge can be used for training programs and education purposes aimed at improving decision-making skills.
+
+# Background
+In the background section, we discuss a study conducted by Steinmetz et al. (2019) that involved 10 mice and 39 experimental sessions. During each trial, the mice were presented with visual stimuli on two screens positioned on either side of them, with varying contrast levels (0, 0.25, 0.5, 1), with 0 indicating the presence of a stimulus. The mice were required to make decisions based on these stimuli using a wheel controlled by their forepaws and received feedback in the form of a reward or penalty.
+
+The stimuli conditions:
+- When left contrast is greater than right contrast, success if turning the wheel to the right and failure otherwise.
+- When right contrast is greater than left contrast, success if turning the wheel to the left and failure otherwise.
+- When both left and right contrasts are zero, success if holding the wheel still and failure otherwise.
+- When left and right contrasts are equal but non-zero, left or right will be randomly chosen with a 50% of chance as the correct choice.
+
+The mice were given feedback based on the outcomes of their decisions, with a score of 1 for successes and -1 for failures.
+
+During the trials, the neural activity in the mice's visual cortex was monitored and recorded as spike trains - a series of timestamps corresponding to neuron firing. For this report, our analysis focused on the spike trains of neurons from the moment the stimuli appeared to 0.4 seconds after. Furthermore, we only utilized data from 18 sessions (Sessions 1 to 18) from four specific mice: Cori, Frossman, Hence, and Lederberg.
+
+Several studies have also attempted to investigate the correlation between the brain and behavior. For instance, Romo's research revealed that neurons in the mouse visual cortex play a role in encoding sensory information. They found that activity in specific brain regions was correlated with the decisions made by the mice. Additionally, Romo's study discovered that the accuracy of the mice's decisions was influenced by the level of noise present in the sensory signals.
+
+# Descriptive Analysis
+
+In order to build our prediction model, we will first explore the features of the data set. In particular, would like to first describe the data structure across all 18 sessions. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+## describe the data structures across sessions (e.g., number of neurons, number of trials, stimuli conditions, feedback types)
+
+n_session = length(session)
+
+# Create an empty tibble
+meta <- tibble(
+  session_num = rep(0, n_session),
+  mouse_name = rep('name', n_session),
+  date_exp = rep('date', n_session),
+  n_brain_area = rep(0, n_session),
+  n_neurons = rep(0, n_session),
+  n_trials = rep(0, n_session),
+  success_rate = rep(0, n_session)
+)
+
+for (i in 1:n_session) {
+  tmp = session[[i]]; # temporary variable
+  meta[i,1] = i
+  meta[i,2] = tmp$mouse_name;
+  meta[i,3] = tmp$date_exp;
+  meta[i,4] = length(unique(tmp$brain_area));
+  meta[i,5] = dim(tmp$spks[[1]])[1];
+  meta[i,6] = length(tmp$feedback_type);
+  meta[i,7] = mean(tmp$feedback_type+1)/2;
+}
+
+library(knitr)
+library(kableExtra)
+
+summary_tab <- kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2, col.names = c("Session", "Mouse Name", "Experiment Date", "Number of Brain Area", "Number of Neurons", "Number of Trials", "Success Rate"))
+summary_tab
+```
+<p style="text-align: center;">**Table 1**. Data Structure Across Sessions.</p>
+
+As shown in **Table 1**, Sessions 1 to 3 correspond to Cori, Sessions 4 to 7 correspond to Forssmann, Sessions 8 to 11 correspond to Hench, and Sessions 12 to 18 correspond to Lederberg. Each session represents a separate experiment conducted on a different date. Hench (Session 18) and Lederberg (Session 13) have the highest number of brain areas recorded in their respective sessions, while Forssmann (Session 6) and Cori (Session 2) have the fewest number of brain areas. Hench (Session 10) has the highest number of neurons and the greatest number of trials in a single session. On the other hand, Cori (Session 1) has the lowest success rate, which measures how frequently the target feedback type is achieved in each session. Notably, Lederberg (Session 17) has the highest success rate among all sessions and mice.
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(tidyr)
+
+calculate_trial_summary <- function(session, i.s) {
+  average_spike_area <- function(i.t, session) {
+    spk.trial <- session$spks[[i.t]]
+    brain.area <- session$brain_area
+    spk.count <- apply(spk.trial, 1, sum)
+    spk.average <- tapply(spk.count, brain.area, mean)
+    return(spk.average)
+  }
+  
+  n.trial <- length(session[[i.s]]$feedback_type)
+  n.area <- length(unique(session[[i.s]]$brain_area))
+  
+  # Create a data frame contain the average for counts for each area, feedback type, the two contrasts, and the trial id
+  trial.summary <- matrix(nrow = n.trial, ncol = n.area + 4) 
+  
+  for(i.t in 1:n.trial) {
+    trial.summary[i.t,] <- c(average_spike_area(i.t, session[[i.s]]), session[[i.s]]$feedback_type[[i.t]], session[[i.s]]$contrast_left[[i.t]], session[[i.s]]$contrast_right[[i.t]], i.t)
+  }
+  colnames(trial.summary) <- c(names(average_spike_area(i.t, session[[i.s]])), 'feedback', 'left_contrast','right_contrast','id' )
+  
+  trial.summary <- as_tibble(trial.summary)
+  
+  # Convert to long format
+  trial.summary_long <- trial.summary %>%
+    pivot_longer(cols = -c(feedback, left_contrast, right_contrast, id), names_to = "Area", values_to = "spike_count")
+  
+  return(trial.summary_long)
+}
+i.s = 2 # session number
+i.t = 1 # trial number
+trial.summary <- calculate_trial_summary(session, i.s)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, result = 'hide', fig.height = 4, fig.width = 5, fig.align = "center"}
+# A function that plot the neuron and spike count for a trial
+library(ggplot2)
+plot_spks <- function(session, session_index, trial_index) {
+  # Get the spike count data and feedback type for the specified session and trial
+  spks <- session[[session_index]]$spks[[trial_index]]
+  feedback <- session[[session_index]]$feedback_type[[trial_index]]
+
+  
+  # Calculate the total spike count for each neuron
+  total_spks <- apply(spks, 1, sum)
+  
+  # Calculate the average number of spikes per neuron
+  # avg_spks <- mean(total_spks)
+  
+  # Create a data frame for visualization
+  df <- data.frame(Neuron = 1:length(total_spks), Spike_Count = total_spks)
+  
+  # Create the bar plot
+  ggplot(df, aes(x = Neuron, y = Spike_Count)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    geom_smooth(se = FALSE, color = "red") +  # Add smoothed line without standard error
+    xlim(0, length(total_spks)) +
+    ylim(0, max(total_spks)) +
+    xlab("Neuron") +
+    ylab("Spike Count") +
+    theme_minimal()
+}
+
+
+# Plot the graph
+plot_spks(session, 2, 1)
+```
+<p style="text-align: center;">**Figure 1**. Total Spike for Each Neuron in Session 2 Trial 1 (Feedback: -1)</p>
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, result = 'hide', fig.height = 4, fig.width = 5, fig.align = "center"}
+plot_spks(session, 2, 2)
+```
+<p style="text-align: center;">**Figure 2**. Total Spike for Each Neuron in Session 2 Trial 2 (Feedback: 1)</p>
+
+Looking at the total number of spikes for each neuron in a trial of a session based on the feedback type allows us to explore the neural activities during each trial and understand how they are influenced by different feedback types. By examining the spike count in **Figure 1** and **Figure 2**, we can see that, on average, neurons tend to exhibit a higher spike count in response to feedback -1 compared to feedback 1. This suggests that the neural population may respond more strongly to feedback -1 compared to feedback 1.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, result = 'hide', fig.height = 4, fig.width = 5, fig.align = "center"}
+trial.summary.1 <- calculate_trial_summary(session, 1)
+n.trial.1 = length(unique(trial.summary.1$id))
+
+# Plot the avg spikes count across trial base on feedback type
+ggplot(trial.summary.1, aes(x = id, y = spike_count)) +
+  geom_line(lty = 2, lwd = 1) +
+  geom_smooth(lwd = 1, se = FALSE) +
+  xlim(0, n.trial.1) +
+  ylim(0.5, 2.2) +
+  xlab("Trials") +
+  ylab("Average spike counts") +
+  facet_wrap(~ feedback, ncol = 1) +
+  theme_minimal()
+```
+<p style="text-align: center;">**Figure 3**. Spikes Per Neuron in Session 1 by Feedback Type</p>
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, result = 'hide', fig.height = 4, fig.width = 5, fig.align = "center"}
+trial.summary.18 <- calculate_trial_summary(session, 18)
+n.trial.18 = length(unique(trial.summary.18$id))
+
+# Plot the avg spikes count across trial base on feedback type
+ggplot(trial.summary.18, aes(x = id, y = spike_count)) +
+  geom_line(lty = 2, lwd = 1) +
+  geom_smooth(lwd = 1, se = FALSE) +
+  xlim(0, n.trial.18) +
+  ylim(0.5, 2.2) +
+  xlab("Trials") +
+  ylab("Average spike counts") +
+  facet_wrap(~ feedback, ncol = 1) +
+  theme_minimal()
+```
+<p style="text-align: center;">**Figure 4**. Spikes Per Neuron in Session 18 by Feedback Type</p>
+
+To provide further insights into potential differences in the underlying neural dynamics related to different feedback types, we will explore the changes across trials by looking at the average spike counts across all trials in a session. In **Figure 3** and **Figure 4**, we can see that the average spike counts across trials are almost the same for both feedback 1 and feedback -1. This means that, on average, there is no significant difference in the number of spikes recorded from neurons during trials associated with feedback 1 compared to trials associated with feedback -1. However, we can observe that there is more neural activity in feedback 1 than feedback -1 for Session 18, which could be related to the high success rate in that session.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Create an empty list to store trial summaries
+trial_summaries <- vector("list", n_session)
+
+# Iterate over the sessions and calculate the trial summary for each session
+for (i in 1:n_session) {
+  trial_summary<- calculate_trial_summary(session, i)
+  
+  # Add session ID to trial summary
+  trial_summary$session_id <- i
+  
+  # Add mice name to trial summary
+  trial_summary$mice <- meta$mouse_name[i]
+  
+  # Store trial summary in the list
+  trial_summaries[[i]] <- trial_summary
+}
+
+# Combine trial summaries from all sessions into a single data frame
+combined_summary <- do.call(rbind, trial_summaries)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, result = 'hide', fig.height = 4, fig.width = 5, fig.align = "center"}
+# Success rate across sessions
+new.meta <- tibble(session = 1:n_session,
+                   success_rate = rep(0, n_session),
+                   mouse = rep('name', n_session))
+
+for(i in 1: n_session) {
+  tmp <- session[[i]]
+  new.meta[i,2] <- mean(tmp$feedback_type + 1) / 2
+  new.meta[i,3] <- tmp$mouse
+}
+
+# Generate a unique set of colors for each mouse
+mouse_colors <- rainbow(length(unique(meta$mouse_name)))
+
+# Plot the line graph with colors based on mouse_name
+ggplot(new.meta, aes(x = session, y = success_rate, group = mouse, color = mouse)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Session", y = "Success Rate") +
+  scale_color_manual(values = mouse_colors)
+```
+<p style="text-align: center;">**Figure 5**. Success Rate Across Session and Mice</p>
+
+Next, we are going to explore homogeneity and heterogeneity across sessions and mice, specifically focusing on the success rate. In **Figure 5**, we can observe that there are variations in success rates among the different mice. Specifically, it is clear that Lederberg (Sessions 12 to 18) has higher success rates compared to Cori. This finding aligns with the information presented in **Figure 3** and **Figure 4**, which indicate that Session 18 has a significantly higher success rate than Session 1.
+
+
+# Data Integration
+Using the findings from the Descriptive Analysis section, we propose an approach to combine data across trials in order to obtain a more comprehensive understanding of the research problem.
+```{r, echo = FALSE}
+# Initialize the session_patterns list before the loop
+session_patterns <- list()
+
+for (i in 1:length(session)) {
+  trial.summary <- calculate_trial_summary(session, i)
+  
+  # Filter the data for feedback types 1 and -1, then calculate the mean of spike_count
+  feedback1_mean <- trial.summary %>% 
+    filter(feedback %in% 1) %>% 
+    summarise(mean_spike = mean(spike_count, na.rm = TRUE)) %>%
+    pull(mean_spike)
+  
+  feedback_minus1_mean <- trial.summary %>% 
+    filter(feedback %in% -1) %>% 
+    summarise(mean_spike = mean(spike_count, na.rm = TRUE)) %>%
+    pull(mean_spike)
+  
+  session_patterns[[i]] <- c(feedback1_mean, feedback_minus1_mean)
+}
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, result = 'hide', fig.height = 4, fig.width = 5, fig.align = "center"}
+library(ggplot2)
+# Convert the session_patterns list to a data frame for easier analysis
+session_patterns_df <- as.data.frame(do.call(rbind, session_patterns))
+session_patterns_df <- cbind(session_patterns_df, meta$session_num, meta$mouse_name)
+colnames(session_patterns_df) <- c("Feedback1_Mean", "FeedbackMinus1_Mean", "Session", "Mice")
+
+# Adjust bar width and add value labels
+ggplot(session_patterns_df, aes(x = Session)) +
+  geom_bar(aes(y = Feedback1_Mean, fill = "Feedback 1"), stat = "identity", position = "dodge") +
+  geom_bar(aes(y = FeedbackMinus1_Mean, fill = "Feedback -1"), stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("Feedback 1" = "lightblue", "Feedback -1" = "lightgreen")) +
+  xlab("Session") +
+  ylab("Average Spike Count") +
+  theme_minimal()
+```
+<p style="text-align: center;">**Figure 6**. Average Spike Counts in Feedback 1 and Feedback -1</p>
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, result = 'hide', fig.height = 4, fig.width = 5, fig.align = "center"}
+# Analyze and visualize the patterns across sessions
+# Boxplot comparing the average spike count between feedback 1 and feedback -1 across sessions
+
+# Reshape the data from wide to long format
+session_patterns_long <- gather(session_patterns_df, Feedback_Type, Average_Spike_Count, Feedback1_Mean:FeedbackMinus1_Mean)
+
+# Plot the boxplot
+ggplot(session_patterns_long, aes(x = Feedback_Type, y = Average_Spike_Count, fill = Feedback_Type)) +
+  geom_boxplot() +
+  labs(y = "Average Spike Count") +
+  scale_fill_manual(values = c("lightblue", "lightgreen")) +
+  theme_minimal()
+```
+<p style="text-align: center;">**Figure 7**. Average Spike Count Comparison</p>
+
+First, we will extract the shared patterns across sessions. As seen in **Figure 6**, on average, the number of spikes recorded from neurons is slightly higher when the feedback type is 1 compared to when it is -1 across multiple sessions. This observation suggests a potential relationship between the feedback type and neural activity, where feedback 1 tends to elicit a slightly higher level of neural activity. **Figure 7** further demonstrates that the mean average spike count for feedback 1 is higher than that for feedback -1 across all sessions.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, result = 'hide', fig.height = 4, fig.width = 5, fig.align = "center"}
+## Clustering for feedback = 1
+
+# Subset the data to only include feedback and spike_count
+data <- combined_summary[, c("session_id", "spike_count","feedback")]
+
+# Filter base on feedback type = 1
+feedback1_data <- data %>% filter(feedback == 1)
+
+# Scale the data
+scaled_data <- scale(feedback1_data[, -3])
+
+# Perform k-means clustering
+k <- 4  # Number of clusters
+kmeans_result <- kmeans(scaled_data, centers = k)
+
+# Get cluster assignments
+cluster_assignments <- kmeans_result$cluster
+
+# Visualize the clusters
+library(ggplot2)
+
+feedback1_data %>%
+  mutate(cluster = kmeans_result$cluster) %>%
+  ggplot(aes(x = session_id, y = spike_count, color = as.factor(cluster))) +
+  geom_point() +
+  xlab("Session ID") +
+  ylab("Spike Count")
+```
+<p style="text-align: center;">**Figure 8**. Clustering Results by Session (Feedback: 1)</p>
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, result = 'hide', fig.height = 4, fig.width = 5, fig.align = "center"}
+### Clustering for feedback = -1
+# Subset the data to only include feedback and spike_count
+data <- combined_summary[, c("session_id", "spike_count","feedback")]
+
+# Filter base on feedback type = 1
+feedback1_data <- data %>% filter(feedback == -1)
+
+# Scale the data
+scaled_data <- scale(feedback1_data[, -3])
+
+# Perform k-means clustering
+k <- 4 # Number of clusters
+kmeans_result <- kmeans(scaled_data, centers = k)
+
+# Get cluster assignments
+cluster_assignments <- kmeans_result$cluster
+
+# Visualize the clusters
+library(ggplot2)
+
+feedback1_data %>%
+  mutate(cluster = kmeans_result$cluster) %>%
+  ggplot(aes(x = session_id, y = spike_count, color = as.factor(cluster))) +
+  geom_point() +
+  xlab("Session ID") +
+  ylab("Spike Count")
+```
+<p style="text-align: center;">**Figure 9**. Clustering Results by Session (Feedback: -1)</p>
+
+Clustering the average spike counts across all sessions by feedback type can be used to identify distinct groups of neurons that exhibit similar patterns of activity in response to different feedback types. By clustering the data, we can explore whether there are underlying subgroups of neurons that show similar response patterns for each feedback type. In **Figure 8** and **Figure 9**, the average spike counts across all sessions for each feedback type are clustered into four groups. It can be observed that the groups are distributed similarly for both feedback types. There are three groups that are evenly distributed across all sessions and have an average spike count of about 3. Additionally, there is one group that consistently shows a spike count greater than approximately 3 across all sessions.
+
+# Predictive Modeling
+Finally, we will build a prediction model to predict the feedback types. The performance will be evaluated on two test sets of 100 trials randomly selected from Session 1 and Session 18, respectively. Here, we used Linear Discriminant Analysis (LDA) method to predict the feedback type based on available features.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Create a data frame for a single session
+createDataFrame <- function(session, i.s) {
+  trial_data <- list()
+  for (i in 1:length(session[[i.s]]$spks)) {
+    spks_trial <- session[[i.s]]$spks[[i]]
+    total_spikes <- sum(spks_trial)
+    #avg_spikes <- mean(total_spikes)
+    
+    trial_data[[i]] <- data.frame(
+    feedback = session[[i.s]]$feedback_type[[i]],
+    left_contrast = session[[i.s]]$contrast_left[[i]],
+    right_contrast = session[[i.s]]$contrast_right[[i]],
+    #average_spikes = avg_spikes
+    spike_count = total_spikes
+    ) 
+  }
+  new_data <- do.call(rbind, trial_data)
+  return(new_data)
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Prediction Model for Session 1
+
+# Step 1: Prepare the data
+session_1 <- createDataFrame(session, 1)
+session_1_test <- createDataFrame(test, 1)
+
+# Step 2: Split the data into training and test sets
+test_data <- session_1
+train_data <- session_1_test
+
+# Step 3: Use the LDA model
+library(MASS)
+lda_model <- lda(feedback ~ left_contrast + right_contrast + spike_count , data = train_data)
+
+# Step 4: Compute the _confusion matrix_ for the test data, and the misclassification error rate.
+test_predict <- predict(lda_model, newdata = test_data)$class
+confusion_matrix <- table(Actual = test_data$feedback, Predicted = test_predict)
+mis_rate <- round(1 - sum(diag(confusion_matrix)) / sum(confusion_matrix), 4)
+accuracy <- round(1 - mis_rate, 4)
+
+confusion_matrix
+paste("Misclassification rate: ", mis_rate)
+paste("Accuracy rate: ", accuracy)
+```
+For Session 1, the confusion matrix shows that the model correctly classified 21 trials of feedback type -1. It also correctly classified 66 trials of feedback type 1. The misclassification rate for this model is 0.2368 or 23.68%. This means the model incorrectly predicted the outcome for 23.68% of the feedback types. The opposite of the misclassification rate would be accuracy, which is 76.32%. This means the model correctly predicted the outcome for 76.32% of the feedback types.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Prediction Model for Session 18
+
+# Step 1: Prepare the data
+session_18 <- createDataFrame(session, 18)
+session_18_test <- createDataFrame(test, 2)
+
+# Step 2: Split the data into training and test sets
+test_data <- session_18
+train_data <- session_18_test
+
+# Step 3: Use the LDA model
+library(MASS)
+lda_model <- lda(feedback ~ left_contrast + right_contrast + spike_count , data = train_data)
+
+# Step 4: Compute the _confusion matrix_ for the test data, and the misclassification error rate.
+test_predict <- predict(lda_model, newdata = test_data)$class
+confusion_matrix <- table(Actual = test_data$feedback, Predicted = test_predict)
+mis_rate <- round(1 - sum(diag(confusion_matrix)) / sum(confusion_matrix), 4)
+accuracy <- round(1 - mis_rate, 4)
+
+confusion_matrix
+paste("Misclassification rate: ", mis_rate)
+paste("Accuracy rate: ", accuracy)
+```
+For Session 18, the confusion matrix shows that 0 trials were feedback -1 and 174 trials were feedback 1. The misclassification rate for this model is 0.1944 or 19.44%. This means the model incorrectly predicted the outcome for 19.44% of the feedback types. The opposite of the misclassification rate would be accuracy, which is 80.56%. This means the model correctly predicted the outcome for 80.56% of the feedback types. One possible reason that there are no values for feedback -1 is because the success rate for Session 18 is 0.81, which is higher than the default threshold of 0.5 used to predict the feedback type.
+
+# Discussion
+The analysis of neural activity in response to different feedback types showed that neurons generally exhibited a slightly higher spike count in response to feedback 1 compared to feedback -1 across multiple sessions. This suggests a potential relationship between feedback type and neural activity. The clustering results also supported this finding, as distinct groups of neurons showed similar response patterns for each feedback type.
+
+Examining success rates across sessions and mice revealed variations in performance. Certain mice consistently had higher success rates, indicating differences in task performance capabilities among individuals. The high success rate in Session 18 corresponded with increased neural activity in response to feedback 1, suggesting a potential relationship between performance and neural response.
+
+Combining data across trials provided a comprehensive understanding of the research problem, revealing no significant difference in neural activity between trials associated with feedback 1 and feedback -1. Clustering analysis further demonstrated distinct groups of neurons with consistent activity patterns for each feedback type, suggesting specific neural dynamics associated with different feedback types.
+
+The prediction model using Linear Discriminant Analysis (LDA) achieved accuracies of 66% for Session 1 and 80% for Session 18. However, it is noteworthy that no trials were classified as feedback -1 in Session 18, likely due to a high success rate surpassing the default prediction threshold. This highlights the potential influence of factors such as success rate and task difficulty on the model's performance.
+
+In summary, these findings provide insights into the relationship between neural activity and feedback types, variations in performance across sessions and mice, the benefits of combining trial data, the presence of distinct neural subgroups, and the predictive capabilities of the developed model. Together, they contribute to a deeper understanding of the neural mechanisms underlying behavioral responses to different feedback types in the context of the conducted experiments.
+
+# Reference
+- Chen, Shizhe. STA 141A Course Project Consulting for Milestone I.
+- Romo R, de Lafuente V. Conversion of sensory signals into perceptual decisions. Prog Neurobiol. 2013 Apr;103:41-75. doi: 10.1016/j.pneurobio.2012.03.007. Epub 2012 Mar 28. PMID: 22472964.
+- Steinmetz NA, Zatka-Haas P, Carandini M, Harris KD. Distributed coding of choice, action and engagement across the mouse brain. Nature. 2019 Dec;576(7786):266-273. doi: 10.1038/s41586-019-1787-x. Epub 2019 Nov 27. PMID: 31776518; PMCID: PMC6913580.
+
+## Session info {-}
+
+
+```{r}
+sessionInfo()
+```
+*** 
+
+## Appendix {-}
+\begin{center} Appendix: R Script \end{center}
+
+```{r, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+```
